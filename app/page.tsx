@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Input } from "@/components/ui/input"
@@ -217,14 +217,14 @@ const ProductTable = ({
 }) => {
   const colorClass = getColorClass(isLosing)
   const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set())
+  const [isTableExpanded, setIsTableExpanded] = useState(false)
 
   const sortedData = createSortedData(data, sortBy, isLosing)
 
   const truncateDescription = (text: string, maxLength = 9) => {
     if (!text) return ""
     const cleanText = text.trim()
-    if (cleanText.length <= maxLength) return cleanText
-    return cleanText.substring(0, maxLength) + "..."
+    return cleanText.length > maxLength ? cleanText.slice(0, maxLength) + "..." : cleanText
   }
 
   const toggleExpanded = (index: number) => {
@@ -237,108 +237,109 @@ const ProductTable = ({
     setExpandedItems(newExpanded)
   }
 
-  const handleDownload = createCSVDownloadHandler(
-    () =>
-      sortedData.map((item) => ({
-        "HTS Number": item.htsNumber,
-        "Product Description": item.description,
-        "2024 Value": formatCurrency(item.originalValue),
-        "With Tariffs": formatCurrency(item.tariffValue),
-        [`${isLosing ? "Loss" : "Gain"}`]: formatCurrency(item.gain),
-        "Percentage Change": item.percentageChange.toFixed(2) + "%",
-      })),
-    () => generateFilename(title),
-    () => [
-      "HTS Number",
-      "Product Description",
-      "2024 Value",
-      "With Tariffs",
-      `${isLosing ? "Loss" : "Gain"}`,
-      "Percentage Change",
-    ],
-    () => (country ? `${title}: ${country}` : title),
-  )
-
   return (
-    <Card>
-      <TableHeaderWithDownload title={title} icon={icon} isLosing={isLosing} onDownload={handleDownload} />
-      <CardContent>
-        <div className="max-h-96 overflow-auto">
-          <Table>
-            <TableHeader className="sticky top-0 bg-white z-10">
-              <TableRow>
-                <SortableTableHeader
-                  label="Product"
-                  sortKey="gain"
-                  currentSort={sortBy}
-                  onSortChange={onSortChange}
-                  className="w-1/3"
-                />
-                <SortableTableHeader
-                  label="2024 Value"
-                  sortKey="original"
-                  currentSort={sortBy}
-                  onSortChange={onSortChange}
-                  align="right"
-                  className="w-1/5"
-                />
-                <SortableTableHeader
-                  label="With Tariffs"
-                  sortKey="tariff"
-                  currentSort={sortBy}
-                  onSortChange={onSortChange}
-                  align="right"
-                  className="w-1/5"
-                />
-                <SortableTableHeader
-                  label={isLosing ? "Loss" : "Gain"}
-                  sortKey="gain"
-                  currentSort={sortBy}
-                  onSortChange={onSortChange}
-                  align="right"
-                  className="w-1/5"
-                />
-                <SortableTableHeader
-                  label="Change %"
-                  sortKey="percentage"
-                  currentSort={sortBy}
-                  onSortChange={onSortChange}
-                  align="right"
-                  className="w-1/5"
-                />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sortedData.slice(0, 10).map((item, index) => (
-                <TableRow key={index}>
-                  <TableCell className="align-top">
-                    <div className="space-y-1">
-                      <div className="font-mono text-xs font-medium">{item.htsNumber}</div>
-                      <div
-                        className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors select-none"
-                        onClick={() => toggleExpanded(index)}
-                      >
-                        {expandedItems.has(index) ? item.description : truncateDescription(item.description)}
-                        {item.description.length > 9 && (
-                          <span className="ml-1 text-blue-500 text-xs">{expandedItems.has(index) ? "▼" : "▶"}</span>
-                        )}
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right align-top font-mono">{formatCurrency(item.originalValue)}</TableCell>
-                  <TableCell className="text-right align-top font-mono">{formatCurrency(item.tariffValue)}</TableCell>
-                  <TableCell className={`text-right align-top font-mono font-semibold ${colorClass}`}>
-                    {formatCurrency(item.gain)}
-                  </TableCell>
-                  <TableCell className={`text-right align-top font-mono ${colorClass}`}>
-                    {item.percentageChange.toFixed(2)}%
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+    <Card className="w-full">
+      <CardHeader className="pb-3">
+        <div
+          className="flex items-center justify-between cursor-pointer hover:bg-muted/50 -m-2 p-2 rounded-md transition-colors"
+          onClick={() => setIsTableExpanded(!isTableExpanded)}
+        >
+          <div className="flex items-center space-x-2">
+            {icon}
+            <CardTitle className="text-lg font-semibold">{title}</CardTitle>
+          </div>
+          <div className="text-muted-foreground">{isTableExpanded ? "▼" : "▶"}</div>
         </div>
-      </CardContent>
+      </CardHeader>
+      <div
+        className={`transition-all duration-300 ease-in-out overflow-hidden ${
+          isTableExpanded ? "max-h-[2000px] opacity-100" : "max-h-0 opacity-0"
+        }`}
+      >
+        <CardContent className="pt-0">
+          <div className="rounded-md border">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <SortableTableHeader
+                    label="Product"
+                    sortKey="gain"
+                    currentSort={sortBy}
+                    onSortChange={onSortChange}
+                    className="w-1/3"
+                  />
+                  <SortableTableHeader
+                    label="2024 Value"
+                    sortKey="original"
+                    currentSort={sortBy}
+                    onSortChange={onSortChange}
+                    align="right"
+                    className="w-1/5"
+                  />
+                  <SortableTableHeader
+                    label="With Tariffs"
+                    sortKey="tariff"
+                    currentSort={sortBy}
+                    onSortChange={onSortChange}
+                    align="right"
+                    className="w-1/5"
+                  />
+                  <SortableTableHeader
+                    label={isLosing ? "Loss" : "Gain"}
+                    sortKey="gain"
+                    currentSort={sortBy}
+                    onSortChange={onSortChange}
+                    align="right"
+                    className="w-1/5"
+                  />
+                  <SortableTableHeader
+                    label="Change %"
+                    sortKey="percentage"
+                    currentSort={sortBy}
+                    onSortChange={onSortChange}
+                    align="right"
+                    className="w-1/5"
+                  />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sortedData.slice(0, 10).map((item, index) => (
+                  <TableRow key={index}>
+                    <TableCell className="align-top">
+                      <div className="space-y-1">
+                        <div className="font-mono text-[10px] font-medium">{item.htsNumber}</div>
+                        <div
+                          className="text-[10px] text-muted-foreground cursor-pointer hover:text-foreground transition-colors select-none"
+                          onClick={() => toggleExpanded(index)}
+                        >
+                          {expandedItems.has(index) ? item.description : truncateDescription(item.description)}
+                          {item.description.length > 9 && (
+                            <span className="ml-1 text-blue-500 text-[10px]">
+                              {expandedItems.has(index) ? "▼" : "▶"}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-right align-top font-sans text-sm">
+                      {formatCurrency(item.originalValue)}
+                    </TableCell>
+                    <TableCell className="text-right align-top font-sans text-sm">
+                      {formatCurrency(item.tariffValue)}
+                    </TableCell>
+                    <TableCell className={`text-right align-top font-sans font-semibold text-sm ${colorClass}`}>
+                      {formatCurrency(item.gain)}
+                    </TableCell>
+                    <TableCell className={`text-right align-top font-sans text-sm ${colorClass}`}>
+                      {item.percentageChange.toFixed(2)}%
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </div>
     </Card>
   )
 }
@@ -389,8 +390,8 @@ const CountryTable = ({
           <TableHeader>
             <TableRow>
               <TableHead>Country</TableHead>
-              <TableHead className="text-right">2024 Value</TableHead>
-              <TableHead className="text-right">With Tariffs</TableHead>
+              <TableHead className="text-right font-sans">2024 Value</TableHead>
+              <TableHead className="text-right font-sans">With Tariffs</TableHead>
               <SortableTableHeader
                 label={isLosing ? "Loss" : "Gain"}
                 sortKey="gain"
@@ -411,9 +412,9 @@ const CountryTable = ({
             {sortedData.map((item, index) => (
               <TableRow key={index} className={index % 2 === 1 ? "bg-gray-100" : ""}>
                 <TableCell className="font-medium">{item.country}</TableCell>
-                <TableCell className="text-right">{formatCurrency(item.originalValue)}</TableCell>
-                <TableCell className="text-right">{formatCurrency(item.tariffValue)}</TableCell>
-                <TableCell className={`text-right font-medium ${colorClass}`}>
+                <TableCell className="text-right font-sans">{formatCurrency(item.originalValue)}</TableCell>
+                <TableCell className="text-right font-sans">{formatCurrency(item.tariffValue)}</TableCell>
+                <TableCell className={`text-right font-medium font-sans ${colorClass}`}>
                   {formatCurrency(Math.abs(item.gain))}
                 </TableCell>
                 <TableCell className="text-right">
@@ -476,6 +477,16 @@ const AutocompleteInput = ({
   renderSuggestion?: (item: any) => React.ReactNode
 }) => {
   const [showSuggestions, setShowSuggestions] = useState(false)
+  const [debouncedValue, setDebouncedValue] = useState(value)
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedValue(value)
+    }, 150)
+    return () => clearTimeout(timer)
+  }, [value])
+
+  const shouldShowSuggestions = debouncedValue.length >= 2 && showSuggestions
 
   return (
     <div className="relative">
@@ -492,7 +503,7 @@ const AutocompleteInput = ({
         className="pl-10"
         disabled={disabled}
       />
-      {showSuggestions && suggestions.length > 0 && (
+      {shouldShowSuggestions && suggestions.length > 0 && (
         <div className="absolute top-full left-0 right-0 bg-popover border rounded-md shadow-lg z-10 max-h-48 overflow-y-auto">
           {suggestions.slice(0, 8).map((item, index) => (
             <button
@@ -513,11 +524,98 @@ const AutocompleteInput = ({
   )
 }
 
-export default function TariffAnalysisApp() {
-  const [countrySearch, setCountrySearch] = useState("")
+const usePrecomputedSearchIndices = (countries: string[], products: any[]) => {
+  return useMemo(() => {
+    const countryIndex = countries
+      .map((country, index) => ({
+        original: country,
+        normalized: country.toLowerCase(),
+        index,
+      }))
+      .sort((a, b) => a.normalized.localeCompare(b.normalized))
+
+    const productIndex = products.map((product, index) => ({
+      original: product,
+      normalizedHts: product.htsNumber,
+      normalizedDesc: product.description.toLowerCase(),
+      searchText: `${product.htsNumber} ${product.description.toLowerCase()}`,
+      index,
+    }))
+
+    return { countryIndex, productIndex }
+  }, [countries, products])
+}
+
+const useOptimizedSearchWithCache = (searchIndex: any[], searchType: "country" | "product") => {
+  const [search, setSearch] = useState("")
+  const [debouncedSearch, setDebouncedSearch] = useState("")
+  const searchCache = useRef(new Map<string, any[]>())
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 100) // Reduced debounce time
+    return () => clearTimeout(timer)
+  }, [search])
+
+  const filteredItems = useMemo(() => {
+    if (debouncedSearch.length < 2) return []
+
+    // Check cache first
+    const cacheKey = `${searchType}-${debouncedSearch}`
+    if (searchCache.current.has(cacheKey)) {
+      return searchCache.current.get(cacheKey)
+    }
+
+    const searchLower = debouncedSearch.toLowerCase()
+    let results: any[] = []
+
+    if (searchType === "country") {
+      // Binary search for country prefix matches, then linear for contains
+      const prefixMatches = searchIndex.filter((item) => item.normalized.startsWith(searchLower))
+      const containsMatches = searchIndex.filter(
+        (item) => !item.normalized.startsWith(searchLower) && item.normalized.includes(searchLower),
+      )
+      results = [...prefixMatches, ...containsMatches].map((item) => item.original).slice(0, 10)
+    } else {
+      // Product search with HTS number priority
+      const htsMatches = searchIndex.filter((item) => item.normalizedHts.includes(debouncedSearch))
+      const descMatches = searchIndex.filter(
+        (item) => !item.normalizedHts.includes(debouncedSearch) && item.normalizedDesc.includes(searchLower),
+      )
+      results = [...htsMatches, ...descMatches].map((item) => item.original).slice(0, 10)
+    }
+
+    // Cache the results
+    searchCache.current.set(cacheKey, results)
+
+    // Limit cache size to prevent memory leaks
+    if (searchCache.current.size > 100) {
+      const firstKey = searchCache.current.keys().next().value
+      searchCache.current.delete(firstKey)
+    }
+
+    return results
+  }, [searchIndex, debouncedSearch, searchType])
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearch(value)
+  }, [])
+
+  const clearSearch = useCallback(() => {
+    setSearch("")
+    setDebouncedSearch("")
+  }, [])
+
+  return {
+    search,
+    filteredItems,
+    handleSearchChange,
+    clearSearch,
+  }
+}
+
+export default function TariffAnalysisTool() {
   const [selectedCountry, setSelectedCountry] = useState("")
   const [selectedCountries, setSelectedCountries] = useState<string[]>([])
-  const [productSearch, setProductSearch] = useState("")
   const [selectedProduct, setSelectedProduct] = useState<string>("")
   const [originalData, setOriginalData] = useState<TradeData[]>([])
   const [tariffData, setTariffData] = useState<TradeData[]>([])
@@ -529,7 +627,6 @@ export default function TariffAnalysisApp() {
   const productWinnersSort = useTableSort("gain")
   const productLosersSort = useTableSort("gain")
 
-  // Get available countries and products
   const countries = useMemo(() => {
     if (originalData.length === 0) return []
     const countryColumns = Object.keys(originalData[0]).filter((key) => key !== "HTS Number" && key !== "Description")
@@ -548,16 +645,11 @@ export default function TariffAnalysisApp() {
     })
   }, [originalData])
 
-  const filteredCountries = countries.filter(
-    (country) => countrySearch.length >= 2 && country.toLowerCase().includes(countrySearch.toLowerCase()),
-  )
+  const { countryIndex, productIndex } = usePrecomputedSearchIndices(countries, products)
 
-  const filteredProducts = products.filter(
-    (product) =>
-      productSearch.length >= 2 &&
-      (product.htsNumber.includes(productSearch) ||
-        product.description.toLowerCase().includes(productSearch.toLowerCase())),
-  )
+  const countrySearch = useOptimizedSearchWithCache(countryIndex, "country")
+  const compareSearch = useOptimizedSearchWithCache(countryIndex, "country")
+  const productSearch = useOptimizedSearchWithCache(productIndex, "product")
 
   const getCountryFlag = (countryName: string): string => {
     const countryFlags: { [key: string]: string } = {
@@ -672,7 +764,6 @@ export default function TariffAnalysisApp() {
         setTariffData(tariffParsed)
       } catch (err) {
         setError("Failed to load data. Please check the CSV URLs.")
-        console.error("Data loading error:", err)
       } finally {
         setLoading(false)
       }
@@ -761,22 +852,6 @@ export default function TariffAnalysisApp() {
       const gain = tariffValue - originalValue
       const percentageChange = originalValue > 0 ? (gain / originalValue) * 100 : 0
 
-      if (country === "India") {
-        // Log first few products for debugging
-        if (analysis.length < 5) {
-          console.log(`India product ${analysis.length + 1}:`, {
-            htsNumber,
-            description: originalRow["Description"]?.substring(0, 50) + "...",
-            originalValue,
-            tariffValue,
-            gain,
-            percentageChange,
-            originalRaw: originalRow[country],
-            tariffRaw: tariffRow[country],
-          })
-        }
-      }
-
       analysis.push({
         product: `${htsNumber} - ${originalRow["Description"]}`,
         htsNumber, // Use the padded HTS number
@@ -789,33 +864,8 @@ export default function TariffAnalysisApp() {
     })
 
     if (country === "India") {
-      console.log(`India Analysis Summary:`, {
-        totalProducts: analysis.length,
-        productsWithGains: analysis.filter((item) => item.gain > 0).length,
-        productsWithLosses: analysis.filter((item) => item.gain < 0).length,
-        productsWithZeroGain: analysis.filter((item) => item.gain === 0).length,
-        topGains: analysis
-          .sort((a, b) => b.gain - a.gain)
-          .slice(0, 5)
-          .map((item) => ({
-            hts: item.htsNumber,
-            gain: item.gain,
-            original: item.originalValue,
-            tariff: item.tariffValue,
-          })),
-        topLosses: analysis
-          .sort((a, b) => a.gain - b.gain)
-          .slice(0, 5)
-          .map((item) => ({
-            hts: item.htsNumber,
-            gain: item.gain,
-            original: item.originalValue,
-            tariff: item.tariffValue,
-          })),
-      })
+      console.log(`Country analysis for ${country}: Processing ${analysis.length} individual HTS products`)
     }
-
-    console.log(`Country analysis for ${country}: Processing ${analysis.length} individual HTS products`)
 
     return analysis.sort((a, b) => b.gain - a.gain)
   }
@@ -845,23 +895,6 @@ export default function TariffAnalysisApp() {
 
       const totalGain = tariffTotal - originalTotal
       const percentageGain = originalTotal > 0 ? (totalGain / originalTotal) * 100 : 0
-
-      // Debug logging for the first country to help identify issues
-      if (country === countries[0]) {
-        console.log(`Debug for ${country}:`, {
-          totalDataRows: originalData.length, // This is 5697 (excludes header row)
-          validRowCount,
-          originalTotal,
-          tariffTotal,
-          totalGain,
-          percentageGain,
-          sampleOriginalValues: originalData.slice(0, 5).map((row) => ({
-            hts: row["HTS Number"],
-            value: row[country],
-            parsed: safeParseFloat(row[country]),
-          })),
-        })
-      }
 
       return {
         country,
@@ -1029,10 +1062,13 @@ export default function TariffAnalysisApp() {
                 <div className="mb-6">
                   <AutocompleteInput
                     placeholder="Search for a country... (min 2 characters)"
-                    value={countrySearch}
-                    onChange={setCountrySearch}
-                    suggestions={filteredCountries}
-                    onSelect={(country) => setSelectedCountry(country)}
+                    value={countrySearch.search}
+                    onChange={countrySearch.handleSearchChange}
+                    suggestions={countrySearch.filteredItems}
+                    onSelect={(country) => {
+                      setSelectedCountry(country)
+                      countrySearch.clearSearch()
+                    }}
                   />
                 </div>
 
@@ -1041,13 +1077,15 @@ export default function TariffAnalysisApp() {
                     <div className="inline-block px-4 py-2 bg-muted rounded-lg">
                       <span className="text-lg font-semibold text-foreground flex items-center justify-center gap-2">
                         {selectedCountry}
-                        <img
-                          src={`https://flagcdn.com/24x18/${getCountryFlag(selectedCountry)}.png`}
-                          alt={`${selectedCountry} flag`}
-                          className="inline-block"
-                          width={24}
-                          height={18}
-                        />
+                        {getCountryFlag(selectedCountry) !== "world" && (
+                          <img
+                            src={`https://flagcdn.com/24x18/${getCountryFlag(selectedCountry)}.png`}
+                            alt={`${selectedCountry} flag`}
+                            className="inline-block"
+                            width={24}
+                            height={18}
+                          />
+                        )}
                       </span>
                     </div>
                   </div>
@@ -1061,36 +1099,64 @@ export default function TariffAnalysisApp() {
                       const topLosses = analysis.slice(-10).reverse()
                       const totalOriginal = analysis.reduce((sum, item) => sum + item.originalValue, 0)
                       const totalTariff = analysis.reduce((sum, item) => sum + item.tariffValue, 0)
+                      const totalGains = analysis
+                        .filter((item) => item.gain > 0)
+                        .reduce((sum, item) => sum + item.gain, 0)
+                      const totalLosses = analysis
+                        .filter((item) => item.gain < 0)
+                        .reduce((sum, item) => sum + item.gain, 0)
 
                       return (
                         <>
-                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                             <Card>
                               <CardHeader className="pb-2">
-                                <CardTitle className="text-sm font-medium">
-                                  Total 2024 Imports from {selectedCountry}
-                                </CardTitle>
+                                <CardTitle className="text-sm font-medium">Imports 2024</CardTitle>
                               </CardHeader>
                               <CardContent>
-                                <div className="text-2xl font-bold">{formatCurrency(totalOriginal)}</div>
+                                <div className="text-2xl font-bold flex items-center">
+                                  {formatCurrency(totalOriginal)}
+                                </div>
                               </CardContent>
                             </Card>
                             <Card>
                               <CardHeader className="pb-2">
-                                <CardTitle className="text-sm font-medium">With Tariffs Applied</CardTitle>
+                                <CardTitle className="text-sm font-medium">Tariffs Applied</CardTitle>
                               </CardHeader>
                               <CardContent>
-                                <div className="text-2xl font-bold">{formatCurrency(totalTariff)}</div>
+                                <div className="text-2xl font-bold flex items-center">
+                                  {formatCurrency(totalTariff)}
+                                </div>
                               </CardContent>
                             </Card>
                             <Card>
                               <CardHeader className="pb-2">
-                                <CardTitle className="text-sm font-medium">Total Impact</CardTitle>
+                                <CardTitle className="text-sm font-medium">Total Gains</CardTitle>
+                              </CardHeader>
+                              <CardContent>
+                                <div className="text-2xl font-bold text-green-600 flex items-center">
+                                  {formatCurrency(totalGains)}
+                                </div>
+                              </CardContent>
+                            </Card>
+                            <Card>
+                              <CardHeader className="pb-2">
+                                <CardTitle className="text-sm font-medium">Total Losses</CardTitle>
+                              </CardHeader>
+                              <CardContent>
+                                <div className="text-2xl font-bold text-red-600 flex items-center">
+                                  {formatCurrency(Math.abs(totalLosses))}
+                                </div>
+                              </CardContent>
+                            </Card>
+                            <Card>
+                              <CardHeader className="pb-2">
+                                <CardTitle className="text-sm font-medium">Net Impact</CardTitle>
                               </CardHeader>
                               <CardContent>
                                 <div className="text-2xl font-bold flex items-center gap-2">
-                                  {formatCurrency(totalTariff - totalOriginal)}
-                                  {totalTariff > totalOriginal ? (
+                                  {formatCurrency(totalGains + totalLosses)}
+                                  {totalGains + totalLosses > 0 ? (
                                     <TrendingUp className="h-4 w-4 text-green-500" />
                                   ) : (
                                     <TrendingDown className="h-4 w-4 text-red-500" />
@@ -1134,18 +1200,27 @@ export default function TariffAnalysisApp() {
               <CardHeader>
                 <CardTitle>Country Comparison</CardTitle>
                 <CardDescription>
-                  Select up to 5 countries to compare their trade impacts from tariff implementation
+                  Compare up to 5 countries to see their relative gains and losses from tariff implementation
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
                   <div className="flex flex-wrap gap-2">
                     {selectedCountries.map((country) => (
-                      <Badge key={country} variant="secondary" className="px-3 py-1">
+                      <Badge key={country} variant="secondary" className="flex items-center gap-2">
+                        {getCountryFlag(country) !== "world" && (
+                          <img
+                            src={`https://flagcdn.com/16x12/${getCountryFlag(country)}.png`}
+                            alt={`${country} flag`}
+                            className="inline-block"
+                            width={16}
+                            height={12}
+                          />
+                        )}
                         {country}
                         <button
                           onClick={() => setSelectedCountries((prev) => prev.filter((c) => c !== country))}
-                          className="ml-2 hover:text-destructive"
+                          className="ml-1 hover:text-destructive"
                         >
                           ×
                         </button>
@@ -1155,10 +1230,13 @@ export default function TariffAnalysisApp() {
 
                   <AutocompleteInput
                     placeholder="Search and add countries... (min 2 characters, max 5)"
-                    value={countrySearch}
-                    onChange={setCountrySearch}
-                    suggestions={filteredCountries.filter((country) => !selectedCountries.includes(country))}
-                    onSelect={(country) => setSelectedCountries((prev) => [...prev, country])}
+                    value={compareSearch.search}
+                    onChange={compareSearch.handleSearchChange}
+                    suggestions={compareSearch.filteredItems.filter((country) => !selectedCountries.includes(country))}
+                    onSelect={(country) => {
+                      setSelectedCountries((prev) => [...prev, country])
+                      compareSearch.clearSearch()
+                    }}
                     disabled={selectedCountries.length >= 5}
                   />
 
@@ -1197,7 +1275,7 @@ export default function TariffAnalysisApp() {
                           <TableHeader>
                             <TableRow>
                               <TableHead>Country</TableHead>
-                              <TableHead className="text-right">2024 Imports</TableHead>
+                              <TableHead className="text-right font-sans">2024 Imports</TableHead>
                               <TableHead className="text-right">With Tariffs</TableHead>
                               <TableHead className="text-right">Gain/Loss</TableHead>
                               <TableHead className="text-right">% Change</TableHead>
@@ -1207,10 +1285,12 @@ export default function TariffAnalysisApp() {
                             {compareCountries(selectedCountries).map((comparison, index) => (
                               <TableRow key={index} className={index % 2 === 1 ? "bg-gray-100" : ""}>
                                 <TableCell className="font-medium">{comparison.country}</TableCell>
-                                <TableCell className="text-right">
+                                <TableCell className="text-right font-sans">
                                   {formatCurrency(comparison.originalImports)}
                                 </TableCell>
-                                <TableCell className="text-right">{formatCurrency(comparison.tariffImports)}</TableCell>
+                                <TableCell className="text-right font-sans">
+                                  {formatCurrency(comparison.tariffImports)}
+                                </TableCell>
                                 <TableCell
                                   className={`text-right font-medium ${
                                     comparison.totalGain >= 0 ? "text-green-600" : "text-red-600"
@@ -1238,7 +1318,7 @@ export default function TariffAnalysisApp() {
             </Card>
           </TabsContent>
 
-          {/* Analyze Product Tab */}
+          {/* Analyze a Product Tab */}
           <TabsContent value="product" className="space-y-6">
             <Card>
               <CardHeader>
@@ -1251,10 +1331,13 @@ export default function TariffAnalysisApp() {
                 <div className="mb-6">
                   <AutocompleteInput
                     placeholder="Search for a product... (min 2 characters)"
-                    value={productSearch}
-                    onChange={setProductSearch}
-                    suggestions={filteredProducts}
-                    onSelect={(product) => setSelectedProduct(product.value)}
+                    value={productSearch.search}
+                    onChange={productSearch.handleSearchChange}
+                    suggestions={productSearch.filteredItems}
+                    onSelect={(product) => {
+                      setSelectedProduct(product.value)
+                      productSearch.clearSearch()
+                    }}
                     renderSuggestion={(product) => (
                       <>
                         <div className="font-semibold">{product.htsNumber}</div>
