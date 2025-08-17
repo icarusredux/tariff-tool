@@ -863,10 +863,6 @@ export default function TariffAnalysisTool() {
       })
     })
 
-    if (country === "India") {
-      console.log(`Country analysis for ${country}: Processing ${analysis.length} individual HTS products`)
-    }
-
     return analysis.sort((a, b) => b.gain - a.gain)
   }
 
