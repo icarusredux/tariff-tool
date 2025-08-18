@@ -1,6 +1,6 @@
 "use client"
 
-import type React from "react"
+import React from "react"
 import { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -459,70 +459,448 @@ const formatPercentage = (value: number) => {
   return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`
 }
 
-const AutocompleteInput = ({
-  placeholder,
-  value,
-  onChange,
-  suggestions,
-  onSelect,
-  disabled = false,
-  renderSuggestion,
-}: {
+const useDebouncedSearch = (searchIndex: any[], searchType: "country" | "product", delay = 150) => {
+  const [search, setSearch] = useState("")
+  const [debouncedSearch, setDebouncedSearch] = useState("")
+  const searchCache = useRef(new Map<string, any[]>())
+  const abortControllerRef = useRef<AbortController | null>(null)
+
+  // Debounce the search input
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search)
+    }, delay)
+
+    return () => clearTimeout(timer)
+  }, [search, delay])
+
+  const filteredItems = useMemo(() => {
+    if (debouncedSearch.length < 2) return []
+
+    // Cancel previous search if still running
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    abortControllerRef.current = new AbortController()
+
+    // Check cache first
+    const cacheKey = `${searchType}-${debouncedSearch}`
+    if (searchCache.current.has(cacheKey)) {
+      return searchCache.current.get(cacheKey)
+    }
+
+    const searchLower = debouncedSearch.toLowerCase()
+    let results: any[] = []
+
+    try {
+      if (searchType === "country") {
+        // Binary search for country prefix matches, then linear for contains
+        const prefixMatches = searchIndex.filter((item) => item.normalized.startsWith(searchLower))
+        const containsMatches = searchIndex.filter(
+          (item) => !item.normalized.startsWith(searchLower) && item.normalized.includes(searchLower),
+        )
+        results = [...prefixMatches, ...containsMatches].map((item) => item.original).slice(0, 5)
+      } else {
+        // Product search with HTS number priority
+        const htsMatches = searchIndex.filter((item) => item.normalizedHts.includes(debouncedSearch))
+        const descMatches = searchIndex.filter(
+          (item) => !item.normalizedHts.includes(debouncedSearch) && item.normalizedDesc.includes(searchLower),
+        )
+        results = [...htsMatches, ...descMatches].map((item) => item.original).slice(0, 5)
+      }
+
+      // Cache the results
+      searchCache.current.set(cacheKey, results)
+
+      // Limit cache size to prevent memory leaks
+      if (searchCache.current.size > 50) {
+        const firstKey = searchCache.current.keys().next().value
+        searchCache.current.delete(firstKey)
+      }
+
+      return results
+    } catch (error) {
+      if (error.name === "AbortError") {
+        return []
+      }
+      throw error
+    }
+  }, [searchIndex, debouncedSearch, searchType])
+
+  const handleSearchChange = useCallback((value: string) => {
+    setSearch(value)
+  }, [])
+
+  return { search, filteredItems, handleSearchChange }
+}
+
+interface AutocompleteInputProps {
+  suggestions: any[]
   placeholder: string
   value: string
   onChange: (value: string) => void
-  suggestions: any[]
   onSelect: (item: any) => void
   disabled?: boolean
   renderSuggestion?: (item: any) => React.ReactNode
-}) => {
-  const [showSuggestions, setShowSuggestions] = useState(false)
-  const [debouncedValue, setDebouncedValue] = useState(value)
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedValue(value)
-    }, 150)
-    return () => clearTimeout(timer)
-  }, [value])
-
-  const shouldShowSuggestions = debouncedValue.length >= 2 && showSuggestions
-
-  return (
-    <div className="relative">
-      <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-      <Input
-        placeholder={placeholder}
-        value={value}
-        onChange={(e) => {
-          onChange(e.target.value)
-          setShowSuggestions(e.target.value.length >= 2)
-        }}
-        onFocus={() => setShowSuggestions(value.length >= 2)}
-        onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-        className="pl-10"
-        disabled={disabled}
-      />
-      {shouldShowSuggestions && suggestions.length > 0 && (
-        <div className="absolute top-full left-0 right-0 bg-popover border rounded-md shadow-lg z-10 max-h-48 overflow-y-auto">
-          {suggestions.slice(0, 8).map((item, index) => (
-            <button
-              key={typeof item === "string" ? item : item.value || index}
-              className="w-full text-left px-3 py-2 hover:bg-accent hover:text-accent-foreground"
-              onClick={() => {
-                onSelect(item)
-                onChange("")
-                setShowSuggestions(false)
-              }}
-            >
-              {renderSuggestion ? renderSuggestion(item) : item}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  )
 }
+
+const AutocompleteInput = React.memo(
+  ({ suggestions, placeholder, value, onChange, onSelect, disabled, renderSuggestion }: AutocompleteInputProps) => {
+    const [showSuggestions, setShowSuggestions] = useState(false)
+    const renderCancelRef = useRef<AbortController | null>(null)
+    const focusTimeRef = useRef<number | null>(null)
+    const hasTypedAfterFocusRef = useRef(false)
+
+    const componentId = useRef(`autocomplete-${Math.random().toString(36).substr(2, 9)}`)
+    const dropdownRef = useRef<HTMLDivElement>(null)
+    const renderStartTimeRef = useRef<number | null>(null)
+
+    const shouldShowSuggestions = value.length >= 2 && showSuggestions
+
+    const enumerateDOM = useCallback((label: string) => {
+      const allElements = document.querySelectorAll("*")
+      const elementCounts: { [key: string]: number } = {}
+      const elementsByTag: { [key: string]: Element[] } = {}
+
+      allElements.forEach((el) => {
+        const tagName = el.tagName.toLowerCase()
+        elementCounts[tagName] = (elementCounts[tagName] || 0) + 1
+        if (!elementsByTag[tagName]) elementsByTag[tagName] = []
+        elementsByTag[tagName].push(el)
+      })
+
+      // Log top element types and their counts
+      const sortedCounts = Object.entries(elementCounts)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 10)
+
+      console.log(`[v0] DOM Enumeration ${label}:`, {
+        totalElements: allElements.length,
+        topElementTypes: sortedCounts,
+        autocompleteDropdowns: document.querySelectorAll("[data-autocomplete-dropdown]").length,
+        detachedElements: Array.from(allElements).filter((el) => !el.isConnected).length,
+      })
+
+      // Log specific autocomplete-related elements
+      const autocompleteElements = document.querySelectorAll(
+        "[data-autocomplete-dropdown], [class*='autocomplete'], [id*='autocomplete']",
+      )
+      if (autocompleteElements.length > 0) {
+        console.log(
+          `[v0] Autocomplete elements ${label}:`,
+          Array.from(autocompleteElements).map((el) => ({
+            tag: el.tagName,
+            classes: el.className,
+            id: el.id,
+            connected: el.isConnected,
+          })),
+        )
+      }
+    }, [])
+
+    const memoizedSuggestions = useMemo(() => {
+      const memoStartTime = performance.now()
+      console.log("[v0] Memoizing suggestions for:", value)
+
+      const limited = suggestions.slice(0, 5)
+
+      const memoEndTime = performance.now()
+      console.log("[v0] Suggestions memoized in:", memoEndTime - memoStartTime, "ms")
+      return limited
+    }, [
+      suggestions.length,
+      suggestions
+        .slice(0, 5)
+        .map((s) => (typeof s === "string" ? s : s?.value || s?.name))
+        .join(","),
+    ])
+
+    const cleanupOrphanedDropdowns = useCallback(() => {
+      const cleanupStartTime = performance.now()
+      console.log("[v0] Starting DOM cleanup")
+
+      enumerateDOM("BEFORE_CLEANUP")
+
+      const allDropdowns = document.querySelectorAll("[data-autocomplete-dropdown]")
+      console.log("[v0] Found", allDropdowns.length, "existing dropdowns")
+
+      allDropdowns.forEach((dropdown) => {
+        if (!dropdown.closest("body")) {
+          dropdown.remove()
+        }
+      })
+
+      // Force garbage collection of detached nodes
+      const orphanedNodes = document.querySelectorAll("*")
+      orphanedNodes.forEach((node) => {
+        if (!node.isConnected && node.parentNode === null) {
+          node.remove()
+        }
+      })
+
+      enumerateDOM("AFTER_CLEANUP")
+
+      const cleanupEndTime = performance.now()
+      console.log("[v0] DOM cleanup completed in:", cleanupEndTime - cleanupStartTime, "ms")
+    }, [enumerateDOM])
+
+    useEffect(() => {
+      return () => {
+        if (renderCancelRef.current) {
+          renderCancelRef.current.abort()
+        }
+        cleanupOrphanedDropdowns()
+      }
+    }, [cleanupOrphanedDropdowns])
+
+    useEffect(() => {
+      if (shouldShowSuggestions && suggestions.length > 0) {
+        renderStartTimeRef.current = performance.now()
+        console.log("[v0] Starting dropdown render for:", value, "with", suggestions.length, "suggestions")
+
+        // Cancel previous render if still running
+        if (renderCancelRef.current) {
+          console.log("[v0] Cancelling previous dropdown render")
+          renderCancelRef.current.abort()
+        }
+        renderCancelRef.current = new AbortController()
+
+        const frameId = requestAnimationFrame(() => {
+          if (!renderCancelRef.current?.signal.aborted && renderStartTimeRef.current) {
+            const renderEndTime = performance.now()
+            console.log("[v0] Dropdown render completed in:", renderEndTime - renderStartTimeRef.current, "ms")
+            renderCancelRef.current = null
+            renderStartTimeRef.current = null
+          }
+        })
+
+        renderCancelRef.current.signal.addEventListener("abort", () => {
+          console.log("[v0] Dropdown render aborted")
+          cancelAnimationFrame(frameId)
+          renderStartTimeRef.current = null
+        })
+      }
+
+      return () => {
+        if (renderCancelRef.current) {
+          renderCancelRef.current.abort()
+        }
+        cleanupOrphanedDropdowns()
+      }
+    }, [shouldShowSuggestions, memoizedSuggestions.length, cleanupOrphanedDropdowns])
+
+    const handleFocus = useCallback(() => {
+      const focusTime = performance.now()
+      focusTimeRef.current = focusTime
+      hasTypedAfterFocusRef.current = false
+
+      console.log("[v0] Input focused at:", focusTime, "value length:", value.length)
+      console.log("[v0] Focus event details:", {
+        activeElement: document.activeElement?.tagName || "none",
+        hasFocus: document.hasFocus(),
+        visibilityState: document.visibilityState,
+        readyState: document.readyState,
+        isInIframe: window !== window.top,
+        timestamp: Date.now(),
+      })
+
+      // Track DOM state before any focus operations
+      const preFocusElements = document.querySelectorAll("*").length
+      console.log("[v0] DOM elements before focus operations:", preFocusElements)
+
+      // Track React operations triggered by focus
+      console.log("[v0] Focus handler: Starting React operations")
+
+      // Track state updates
+      const stateUpdateStart = performance.now()
+      console.log("[v0] Focus handler: About to trigger state updates")
+
+      // Any state updates would go here - currently none
+
+      const stateUpdateEnd = performance.now()
+      console.log("[v0] Focus handler: State updates completed in:", stateUpdateEnd - stateUpdateStart, "ms")
+
+      // Track effect triggers
+      console.log("[v0] Focus handler: Checking for effect triggers")
+
+      // Track DOM enumeration timing
+      const enumerationStart = performance.now()
+      enumerateDOM("ON_FOCUS")
+      const enumerationEnd = performance.now()
+      console.log("[v0] Focus handler: DOM enumeration completed in:", enumerationEnd - enumerationStart, "ms")
+
+      // Track total focus handler timing
+      const focusHandlerEnd = performance.now()
+      console.log("[v0] Focus handler: Total focus handler time:", focusHandlerEnd - focusTime, "ms")
+
+      // Track DOM state after focus operations
+      const postFocusElements = document.querySelectorAll("*").length
+      const elementDifference = postFocusElements - preFocusElements
+      console.log("[v0] DOM elements after focus operations:", postFocusElements, "difference:", elementDifference)
+
+      if (elementDifference > 0) {
+        console.log("[v0] Focus handler: WARNING - Focus handler created", elementDifference, "DOM elements")
+      }
+    }, [value, enumerateDOM])
+
+    const handleInputChange = useCallback(
+      (e: React.ChangeEvent<HTMLInputElement>) => {
+        const inputChangeStartTime = performance.now()
+
+        if (focusTimeRef.current !== null && !hasTypedAfterFocusRef.current) {
+          const focusToKeystrokeLag = inputChangeStartTime - focusTimeRef.current
+
+          console.log("[v0] Focus-to-first-keystroke lag:", focusToKeystrokeLag, "ms")
+
+          // Browser environment diagnostics
+          console.log("[v0] Browser diagnostics:", {
+            userAgent: navigator.userAgent,
+            isInIframe: window !== window.top,
+            documentReadyState: document.readyState,
+            windowInnerWidth: window.innerWidth,
+            windowInnerHeight: window.innerHeight,
+            devicePixelRatio: window.devicePixelRatio,
+            connectionType: (navigator as any).connection?.effectiveType || "unknown",
+            hardwareConcurrency: navigator.hardwareConcurrency || "unknown",
+          })
+
+          // Memory and performance diagnostics
+          if ("memory" in performance) {
+            const memory = (performance as any).memory
+            console.log("[v0] Memory usage:", {
+              usedJSHeapSize: Math.round(memory.usedJSHeapSize / 1024 / 1024) + "MB",
+              totalJSHeapSize: Math.round(memory.totalJSHeapSize / 1024 / 1024) + "MB",
+              jsHeapSizeLimit: Math.round(memory.jsHeapSizeLimit / 1024 / 1024) + "MB",
+            })
+          }
+
+          // DOM state diagnostics
+          console.log("[v0] DOM state:", {
+            totalElements: document.querySelectorAll("*").length,
+            inputElements: document.querySelectorAll("input").length,
+            dropdownElements: document.querySelectorAll("[data-dropdown]").length,
+            bodyChildren: document.body.children.length,
+            documentTitle: document.title,
+          })
+
+          enumerateDOM("FIRST_KEYSTROKE")
+
+          // Paint timing diagnostics
+          if ("getEntriesByType" in performance) {
+            const paintEntries = performance.getEntriesByType("paint")
+            console.log(
+              "[v0] Paint timing:",
+              paintEntries.map((entry) => ({
+                name: entry.name,
+                startTime: Math.round(entry.startTime) + "ms",
+              })),
+            )
+          }
+
+          // Event timing diagnostics
+          console.log("[v0] Event timing:", {
+            focusTime: Math.round(focusTimeRef.current),
+            inputChangeTime: Math.round(inputChangeStartTime),
+            timeSinceFocus: Math.round(focusToKeystrokeLag),
+            performanceNow: Math.round(performance.now()),
+          })
+
+          hasTypedAfterFocusRef.current = true
+        }
+
+        console.log("[v0] Input change started for:", e.target.value)
+
+        const inputValue = e.target.value
+        onChange(inputValue)
+        setShowSuggestions(inputValue.length >= 2)
+
+        const inputChangeEndTime = performance.now()
+        console.log("[v0] Input change completed in:", inputChangeEndTime - inputChangeStartTime, "ms")
+      },
+      [onChange, enumerateDOM],
+    )
+
+    const handleSuggestionClick = useCallback(
+      (item: any) => {
+        const clickStartTime = performance.now()
+        console.log("[v0] Suggestion clicked:", item)
+
+        enumerateDOM("BEFORE_SUGGESTION_CLICK")
+
+        onSelect(item)
+        onChange("")
+        setShowSuggestions(false)
+
+        if (renderCancelRef.current) {
+          renderCancelRef.current.abort()
+        }
+
+        cleanupOrphanedDropdowns()
+
+        enumerateDOM("AFTER_SUGGESTION_CLICK")
+
+        const clickEndTime = performance.now()
+        console.log("[v0] Suggestion click handling completed in:", clickEndTime - clickStartTime, "ms")
+      },
+      [onSelect, onChange, cleanupOrphanedDropdowns, enumerateDOM],
+    )
+
+    const handleBlur = useCallback(() => {
+      console.log("[v0] Input blur - hiding suggestions")
+      setTimeout(() => {
+        setShowSuggestions(false)
+        if (renderCancelRef.current) {
+          renderCancelRef.current.abort()
+        }
+        cleanupOrphanedDropdowns()
+      }, 200)
+    }, [cleanupOrphanedDropdowns])
+
+    console.log("[v0] Dropdown should show:", shouldShowSuggestions, "suggestions count:", memoizedSuggestions.length)
+
+    return (
+      <div className="relative transform-gpu">
+        <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+        <Input
+          placeholder={placeholder}
+          value={value}
+          onChange={handleInputChange}
+          onFocus={handleFocus}
+          onBlur={handleBlur}
+          className="pl-10 transform-gpu will-change-contents"
+          disabled={disabled}
+        />
+        {shouldShowSuggestions && memoizedSuggestions.length > 0 && (
+          <div
+            ref={dropdownRef}
+            data-autocomplete-dropdown
+            className="absolute top-full left-0 right-0 bg-popover border rounded-md shadow-lg z-10 max-h-48 overflow-y-auto transform-gpu will-change-transform contain-layout contain-style contain-paint"
+          >
+            {memoizedSuggestions.map((item, index) => {
+              return (
+                <button
+                  key={typeof item === "string" ? item : item.value || index}
+                  className="w-full text-left px-3 py-2 hover:bg-accent hover:text-accent-foreground transform-gpu transition-colors duration-75 h-10"
+                  onClick={() => handleSuggestionClick(item)}
+                >
+                  {renderSuggestion ? renderSuggestion(item) : item}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    )
+  },
+  (prevProps, nextProps) => {
+    return (
+      prevProps.value === nextProps.value &&
+      prevProps.suggestions.length === nextProps.suggestions.length &&
+      prevProps.disabled === nextProps.disabled &&
+      prevProps.placeholder === nextProps.placeholder
+    )
+  },
+)
 
 const usePrecomputedSearchIndices = (countries: string[], products: any[]) => {
   return useMemo(() => {
@@ -548,53 +926,54 @@ const usePrecomputedSearchIndices = (countries: string[], products: any[]) => {
 
 const useOptimizedSearchWithCache = (searchIndex: any[], searchType: "country" | "product") => {
   const [search, setSearch] = useState("")
-  const [debouncedSearch, setDebouncedSearch] = useState("")
   const searchCache = useRef(new Map<string, any[]>())
 
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(search), 100) // Reduced debounce time
-    return () => clearTimeout(timer)
-  }, [search])
-
   const filteredItems = useMemo(() => {
-    if (debouncedSearch.length < 2) return []
+    if (search.length < 2) return []
 
     // Check cache first
-    const cacheKey = `${searchType}-${debouncedSearch}`
+    const cacheKey = `${searchType}-${search}`
     if (searchCache.current.has(cacheKey)) {
       return searchCache.current.get(cacheKey)
     }
 
-    const searchLower = debouncedSearch.toLowerCase()
+    const searchLower = search.toLowerCase()
     let results: any[] = []
 
-    if (searchType === "country") {
-      // Binary search for country prefix matches, then linear for contains
-      const prefixMatches = searchIndex.filter((item) => item.normalized.startsWith(searchLower))
-      const containsMatches = searchIndex.filter(
-        (item) => !item.normalized.startsWith(searchLower) && item.normalized.includes(searchLower),
-      )
-      results = [...prefixMatches, ...containsMatches].map((item) => item.original).slice(0, 10)
-    } else {
-      // Product search with HTS number priority
-      const htsMatches = searchIndex.filter((item) => item.normalizedHts.includes(debouncedSearch))
-      const descMatches = searchIndex.filter(
-        (item) => !item.normalizedHts.includes(debouncedSearch) && item.normalizedDesc.includes(searchLower),
-      )
-      results = [...htsMatches, ...descMatches].map((item) => item.original).slice(0, 10)
+    try {
+      if (searchType === "country") {
+        // Binary search for country prefix matches, then linear for contains
+        const prefixMatches = searchIndex.filter((item) => item.normalized.startsWith(searchLower))
+        const containsMatches = searchIndex.filter(
+          (item) => !item.normalized.startsWith(searchLower) && item.normalized.includes(searchLower),
+        )
+        results = [...prefixMatches, ...containsMatches].map((item) => item.original).slice(0, 5)
+      } else {
+        // Product search with HTS number priority
+        const htsMatches = searchIndex.filter((item) => item.normalizedHts.includes(search))
+        const descMatches = searchIndex.filter(
+          (item) => !item.normalizedHts.includes(search) && item.normalizedDesc.includes(searchLower),
+        )
+        results = [...htsMatches, ...descMatches].map((item) => item.original).slice(0, 5)
+      }
+
+      // Cache the results
+      searchCache.current.set(cacheKey, results)
+
+      // Limit cache size to prevent memory leaks
+      if (searchCache.current.size > 50) {
+        const firstKey = searchCache.current.keys().next().value
+        searchCache.current.delete(firstKey)
+      }
+
+      return results
+    } catch (error) {
+      if (error.name === "AbortError") {
+        return []
+      }
+      throw error
     }
-
-    // Cache the results
-    searchCache.current.set(cacheKey, results)
-
-    // Limit cache size to prevent memory leaks
-    if (searchCache.current.size > 100) {
-      const firstKey = searchCache.current.keys().next().value
-      searchCache.current.delete(firstKey)
-    }
-
-    return results
-  }, [searchIndex, debouncedSearch, searchType])
+  }, [searchIndex, search, searchType])
 
   const handleSearchChange = useCallback((value: string) => {
     setSearch(value)
@@ -602,7 +981,6 @@ const useOptimizedSearchWithCache = (searchIndex: any[], searchType: "country" |
 
   const clearSearch = useCallback(() => {
     setSearch("")
-    setDebouncedSearch("")
   }, [])
 
   return {
@@ -647,9 +1025,9 @@ export default function TariffAnalysisTool() {
 
   const { countryIndex, productIndex } = usePrecomputedSearchIndices(countries, products)
 
-  const countrySearch = useOptimizedSearchWithCache(countryIndex, "country")
-  const compareSearch = useOptimizedSearchWithCache(countryIndex, "country")
-  const productSearch = useOptimizedSearchWithCache(productIndex, "product")
+  const countryTabSearchHook = useDebouncedSearch(countryIndex, "country", 150)
+  const compareTabSearchHook = useDebouncedSearch(countryIndex, "country", 150)
+  const productTabSearchHook = useDebouncedSearch(productIndex, "product", 150)
 
   const getCountryFlag = (countryName: string): string => {
     const countryFlags: { [key: string]: string } = {
@@ -1058,12 +1436,12 @@ export default function TariffAnalysisTool() {
                 <div className="mb-6">
                   <AutocompleteInput
                     placeholder="Search for a country... (min 2 characters)"
-                    value={countrySearch.search}
-                    onChange={countrySearch.handleSearchChange}
-                    suggestions={countrySearch.filteredItems}
+                    value={countryTabSearchHook.search}
+                    onChange={countryTabSearchHook.handleSearchChange}
+                    suggestions={countryTabSearchHook.filteredItems}
                     onSelect={(country) => {
                       setSelectedCountry(country)
-                      countrySearch.clearSearch()
+                      countryTabSearchHook.handleSearchChange("")
                     }}
                   />
                 </div>
@@ -1110,19 +1488,17 @@ export default function TariffAnalysisTool() {
                                 <CardTitle className="text-sm font-medium">Imports 2024</CardTitle>
                               </CardHeader>
                               <CardContent>
-                                <div className="text-2xl font-bold flex items-center">
+                                <div className="text-lg font-bold flex items-center">
                                   {formatCurrency(totalOriginal)}
                                 </div>
                               </CardContent>
                             </Card>
                             <Card>
                               <CardHeader className="pb-2">
-                                <CardTitle className="text-sm font-medium">Tariffs Applied</CardTitle>
+                                <CardTitle className="text-sm font-medium">After Tariff</CardTitle>
                               </CardHeader>
                               <CardContent>
-                                <div className="text-2xl font-bold flex items-center">
-                                  {formatCurrency(totalTariff)}
-                                </div>
+                                <div className="text-lg font-bold flex items-center">{formatCurrency(totalTariff)}</div>
                               </CardContent>
                             </Card>
                             <Card>
@@ -1130,7 +1506,7 @@ export default function TariffAnalysisTool() {
                                 <CardTitle className="text-sm font-medium">Total Gains</CardTitle>
                               </CardHeader>
                               <CardContent>
-                                <div className="text-2xl font-bold text-green-600 flex items-center">
+                                <div className="text-lg font-bold text-green-600 flex items-center">
                                   {formatCurrency(totalGains)}
                                 </div>
                               </CardContent>
@@ -1140,7 +1516,7 @@ export default function TariffAnalysisTool() {
                                 <CardTitle className="text-sm font-medium">Total Losses</CardTitle>
                               </CardHeader>
                               <CardContent>
-                                <div className="text-2xl font-bold text-red-600 flex items-center">
+                                <div className="text-lg font-bold text-red-600 flex items-center">
                                   {formatCurrency(Math.abs(totalLosses))}
                                 </div>
                               </CardContent>
@@ -1150,7 +1526,7 @@ export default function TariffAnalysisTool() {
                                 <CardTitle className="text-sm font-medium">Net Impact</CardTitle>
                               </CardHeader>
                               <CardContent>
-                                <div className="text-2xl font-bold flex items-center gap-2">
+                                <div className="text-lg font-bold flex items-center gap-2">
                                   {formatCurrency(totalGains + totalLosses)}
                                   {totalGains + totalLosses > 0 ? (
                                     <TrendingUp className="h-4 w-4 text-green-500" />
@@ -1196,7 +1572,7 @@ export default function TariffAnalysisTool() {
               <CardHeader>
                 <CardTitle>Country Comparison</CardTitle>
                 <CardDescription>
-                  Compare up to 5 countries to see their relative gains and losses from tariff implementation
+                  Compare up to 10 countries to see their relative gains and losses from tariff implementation
                 </CardDescription>
               </CardHeader>
               <CardContent>
@@ -1225,15 +1601,17 @@ export default function TariffAnalysisTool() {
                   </div>
 
                   <AutocompleteInput
-                    placeholder="Search and add countries... (min 2 characters, max 5)"
-                    value={compareSearch.search}
-                    onChange={compareSearch.handleSearchChange}
-                    suggestions={compareSearch.filteredItems.filter((country) => !selectedCountries.includes(country))}
+                    placeholder="Search and add countries... (min 2 characters, max 10)"
+                    value={compareTabSearchHook.search}
+                    onChange={compareTabSearchHook.handleSearchChange}
+                    suggestions={compareTabSearchHook.filteredItems.filter(
+                      (country) => !selectedCountries.includes(country),
+                    )}
                     onSelect={(country) => {
                       setSelectedCountries((prev) => [...prev, country])
-                      compareSearch.clearSearch()
+                      compareTabSearchHook.handleSearchChange("")
                     }}
-                    disabled={selectedCountries.length >= 5}
+                    disabled={selectedCountries.length >= 10}
                   />
 
                   {selectedCountries.length > 0 && (
@@ -1327,12 +1705,12 @@ export default function TariffAnalysisTool() {
                 <div className="mb-6">
                   <AutocompleteInput
                     placeholder="Search for a product... (min 2 characters)"
-                    value={productSearch.search}
-                    onChange={productSearch.handleSearchChange}
-                    suggestions={productSearch.filteredItems}
+                    value={productTabSearchHook.search}
+                    onChange={productTabSearchHook.handleSearchChange}
+                    suggestions={productTabSearchHook.filteredItems}
                     onSelect={(product) => {
                       setSelectedProduct(product.value)
-                      productSearch.clearSearch()
+                      productTabSearchHook.handleSearchChange("")
                     }}
                     renderSuggestion={(product) => (
                       <>
