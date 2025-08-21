@@ -227,82 +227,34 @@ const AutocompleteInput = React.memo(
     searchType: "country" | "product"
   }) => {
     const [showSuggestions, setShowSuggestions] = useState(false)
-    const [focusTime, setFocusTime] = useState<number | null>(null)
-    const [hasTypedAfterFocus, setHasTypedAfterFocus] = useState(false)
     const inputRef = useRef<HTMLInputElement>(null)
-    const abortControllerRef = useRef<AbortController | null>(null)
 
     const memoizedSuggestions = useMemo(() => {
       return suggestions.slice(0, 5)
-    }, [
-      suggestions.length,
-      suggestions
-        .slice(0, 5)
-        .map((s) => (typeof s === "string" ? s : s?.value || s?.name))
-        .join(","),
-    ])
-
-    const handleFocus = useCallback(() => {
-      const currentTime = performance.now()
-      setFocusTime(currentTime)
-      setHasTypedAfterFocus(false)
-      console.log("[v0] Input focused at:", currentTime, "value length:", value.length)
-    }, [value.length])
+    }, [suggestions])
 
     const handleInputChange = useCallback(
       (e: React.ChangeEvent<HTMLInputElement>) => {
         const newValue = e.target.value
-        const changeStartTime = performance.now()
-
-        if (focusTime && !hasTypedAfterFocus) {
-          const lag = changeStartTime - focusTime
-          console.log("[v0] Focus-to-first-keystroke lag:", lag, "ms")
-          setHasTypedAfterFocus(true)
-        }
-
-        console.log("[v0] Input change started for:", newValue)
         onChange(newValue)
         setShowSuggestions(newValue.length >= 2)
-
-        const changeEndTime = performance.now()
-        console.log("[v0] Input change completed in:", changeEndTime - changeStartTime, "ms")
       },
-      [onChange, focusTime, hasTypedAfterFocus],
+      [onChange],
     )
 
     const handleSuggestionClick = useCallback(
       (suggestion: any) => {
-        const clickStartTime = performance.now()
-        console.log("[v0] Suggestion clicked:", suggestion)
-
         onSelect(suggestion)
         setShowSuggestions(false)
-        setFocusTime(null)
-        setHasTypedAfterFocus(false)
-
-        const clickEndTime = performance.now()
-        console.log("[v0] Suggestion click handling completed in:", clickEndTime - clickStartTime, "ms")
       },
       [onSelect],
     )
 
     const handleBlur = useCallback(() => {
-      console.log("[v0] Input blur - hiding suggestions")
       setTimeout(() => setShowSuggestions(false), 150)
     }, [])
 
     const shouldShowDropdown = showSuggestions && memoizedSuggestions.length > 0
-    console.log("[v0] Dropdown should show:", shouldShowDropdown, "suggestions count:", memoizedSuggestions.length)
-
-    if (shouldShowDropdown) {
-      const renderStartTime = performance.now()
-      console.log("[v0] Starting dropdown render for:", value, "with", memoizedSuggestions.length, "suggestions")
-
-      setTimeout(() => {
-        const renderEndTime = performance.now()
-        console.log("[v0] Dropdown render completed in:", renderEndTime - renderStartTime, "ms")
-      }, 0)
-    }
 
     return (
       <div className="relative">
@@ -311,7 +263,6 @@ const AutocompleteInput = React.memo(
           type="text"
           value={value}
           onChange={handleInputChange}
-          onFocus={handleFocus}
           onBlur={handleBlur}
           placeholder={placeholder}
           disabled={disabled}
@@ -321,16 +272,6 @@ const AutocompleteInput = React.memo(
           <div className="absolute top-full left-0 right-0 bg-popover border rounded-md shadow-lg z-10 max-h-48 overflow-y-auto">
             {memoizedSuggestions.map((suggestion, index) => {
               const suggestionValue = typeof suggestion === "string" ? suggestion : suggestion.value || suggestion.name
-              console.log(
-                "[v0] Rendering suggestion",
-                index,
-                ":",
-                suggestionValue,
-                "type:",
-                typeof suggestionValue,
-                "suggestion object:",
-                suggestion,
-              )
               return (
                 <button
                   key={index}
@@ -720,74 +661,12 @@ const usePrecomputedSearchIndices = (countries: string[], products: any[]) => {
   }, [countries, products])
 }
 
-const useOptimizedSearchWithCache = (searchIndex: any[], searchType: "country" | "product") => {
-  const [search, setSearch] = useState("")
-  const searchCache = useRef(new Map<string, any[]>())
-
-  const filteredItems = useMemo(() => {
-    if (search.length < 2) return []
-
-    // Check cache first
-    const cacheKey = `${searchType}-${search}`
-    if (searchCache.current.has(cacheKey)) {
-      return searchCache.current.get(cacheKey)
-    }
-
-    const searchLower = search.toLowerCase()
-    let results: any[] = []
-
-    try {
-      if (searchType === "country") {
-        // Binary search for country prefix matches, then linear for contains
-        const prefixMatches = searchIndex.filter((item) => item.normalized.startsWith(searchLower))
-        const containsMatches = searchIndex.filter(
-          (item) => !item.normalized.startsWith(searchLower) && item.normalized.includes(searchLower),
-        )
-        results = [...prefixMatches, ...containsMatches].map((item) => item.original).slice(0, 5)
-      } else {
-        // Product search with HTS number priority
-        const htsMatches = searchIndex.filter((item) => item.normalizedHts.includes(search))
-        const descMatches = searchIndex.filter(
-          (item) => !item.normalizedHts.includes(search) && item.normalizedDesc.includes(searchLower),
-        )
-        results = [...htsMatches, ...descMatches].map((item) => item.original).slice(0, 5)
-      }
-
-      // Cache the results
-      searchCache.current.set(cacheKey, results)
-
-      // Limit cache size to prevent memory leaks
-      if (searchCache.current.size > 50) {
-        const firstKey = searchCache.current.keys().next().value
-        searchCache.current.delete(firstKey)
-      }
-
-      return results
-    } catch (error) {
-      if (error.name === "AbortError") {
-        return []
-      }
-      throw error
-    }
-  }, [searchIndex, search, searchType])
-
-  const handleSearchChange = useCallback((value: string) => {
-    setSearch(value)
-  }, [])
-
-  const clearSearch = useCallback(() => {
-    setSearch("")
-  }, [])
-
-  return {
-    search,
-    filteredItems,
-    handleSearchChange,
-    clearSearch,
-  }
+interface Product {
+  htsNumber: string
+  description: string
 }
 
-const useSimpleProductSearch = (products: any[]) => {
+const useSimpleProductSearch = (products: Product[]) => {
   const [search, setSearch] = useState("")
 
   const filteredItems = useMemo(() => {
